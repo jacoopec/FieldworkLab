@@ -1,0 +1,18 @@
+valori strani in rgions
+
+If you truly have no labels: use unsupervised methods only to find structure
+
+clustering: split customers into behavior groups
+anomaly detection: find unusual customers
+but these do not directly give a true binary target
+
+
+choose a cutoff date
+define who was inactive at that date
+check who reactivated in the following window
+assign target = 1/0
+train a binary classifier on features built before the cutoff
+
+last_purchase_before_cutoff <= cutoff - inactivity_window  -> eligible inactive client
+any purchase in future outcome window                      -> target = 1
+no purchase in future outcome window                       -> target = 0
