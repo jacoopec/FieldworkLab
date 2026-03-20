@@ -1,9 +1,105 @@
-git init
+CRM Reactivation Modeling Report
+1. Project objective and overall analytical logic
 
-git commit -m "first commit"
+The purpose of this project is to build a decision-oriented CRM model capable of ranking inactive customers by their probability of reactivation, so that marketing and sales teams can concentrate campaigns on the customers most likely to return. The roadmap defines success in explicitly operational terms: the model is not meant to produce a rigid yes/no classification, but rather a ranked list whose top segment should reactivate at a significantly higher rate than a random group of inactive customers. In other words, the project is valuable only if it improves campaign efficiency and makes outreach more cost-effective.
 
-git branch -M main
+The entire notebook was therefore developed around a practical business question rather than a purely technical one: given historical sales and client-registry information, can we identify which currently inactive clients should be contacted first? This framing is consistent with the roadmap’s problem definition, which treats reactivation as a binary classification problem whose output is a probability score used to prioritize the top 
+𝑁
+N customers according to budget and expected return.
 
-git remote add origin https://github.com/jacoopec/FieldworkLab.git
+A central methodological issue emerged immediately: the target variable does not exist in the raw data and has to be engineered retrospectively. The roadmap calls this “the core challenge” and proposes a time-machine logic: at a chosen historical cutoff, identify customers who have already been inactive for at least 24 months, then observe whether they return during the following 24 months. That approach became the organizing principle of the notebook.
 
-git push -u origin main
+2. Data sources and analytical framing
+
+The modeling exercise is based on two datasets. The first, TOOL_CLIENT, is the client registry and contains 93,257 customer rows. The second, TOOL_SALES, is the purchase history table and contains 2,050,449 rows. Together they provide the minimum structure necessary to connect customer attributes, purchase behavior, and subsequent reactivation outcomes. The roadmap lists the main client fields—registration date, region, trade sector, number of employees, economic potential, economic-potential class, and risk category—and the key sales fields—purchase month, product identifiers, product type, sales channel, net amount, unit, product family, product group, customer identifier, and cancellation flag.
+
+The first notebook blocks were designed to standardize this structure and make it reproducible. Dates were parsed, columns normalized, business constants fixed, and the analysis configured around a leakage-safe workflow. This step was not just technical hygiene. It ensured that all later calculations—especially target construction and feature engineering—would respect the temporal discipline required by the roadmap. The roadmap is very clear that future data must never be used to predict the past, and that all features must be computed strictly before the inactivity cutoff.
+
+3. Data audit and the need for explicit cleaning decisions
+
+Before any modeling was attempted, the notebook audited the sales history and customer activity patterns in order to confirm the assumptions stated in the roadmap and to expose potential distortions. This stage was essential because the project is unusually sensitive to what counts as “true inactivity.” The roadmap highlights several data-quality and behavioral issues that directly affect the model definition: missing REGION values, cancelled orders, negative NET amounts due to returns, a large group of customers with only cancelled transactions, and exceptional disruption during March–May 2020. It also notes that August exhibits a pronounced annual drop in transactions, which is likely driven by Italian seasonal business closures rather than genuine churn.
+
+These observations are not secondary details. They shape the meaning of inactivity itself. A customer who appears inactive because all observed rows are cancelled orders does not provide valid purchase behavior to model. A customer with no purchases during April 2020 may not be disengaged at all; they may simply have been affected by pandemic disruption. A long gap over August may reflect normal seasonality rather than declining engagement. For these reasons, the notebook’s audit block was used to inspect monthly transaction coverage, active clients by month, the annual August dip, the COVID shock, the share of cancelled rows, and the distribution of valid purchases per customer. This stage also allowed the notebook to distinguish between “raw activity” and “valid purchase activity,” which is a conceptual distinction required for the rest of the project.
+
+4. The clean customer master and cohort feasibility
+
+Once the raw data had been standardized and audited, the next priority was to construct a clean customer master table. This table combined client-registry attributes with customer-level purchase summaries and exclusion flags. The purpose of this step was to establish, for each customer, whether they had any valid purchase behavior at all, whether they belonged to the cancel-only group, whether their region needed imputation or explicit “Unknown” handling, and whether they could legitimately be included in the modeling base.
+
+This design mirrors the roadmap’s recommended cleaning sequence: remove cancelled transactions from feature calculation, decide how to treat negative NET values, exclude the 7,543 clients with only cancelled transactions, and handle missing region values either through imputation or by preserving an “Unknown” label. Those rules were translated into the notebook as explicit preprocessing decisions, making the modeling base far more defensible than a direct join of raw tables would have been.
+
+A more subtle but very important issue also emerged at this stage: observability. The roadmap presents an illustrative target-building example based on identifying clients inactive by the end of 2018 and checking whether they reactivated in 2019–2020. However, the same document also states that the available purchase window spans only January 2017 to December 2021, and explicitly notes that multiple time splits may be used, including end-2019 inactivity with a 2020–2021 outcome window. Given the observed sales horizon, the notebook adopted a stricter, more fully observable training cutoff at the end of 2019. This avoided the left-censoring problem that would arise when trying to certify 24-month inactivity at the end of 2018 without reliable pre-2017 purchase history. That choice remains faithful to the roadmap, because the roadmap itself encourages additional time splits precisely to make the model more robust and especially to address COVID sensitivity.
+
+5. Target construction: the core supervised-learning step
+
+The target-construction block is the conceptual center of the notebook. The project could not be approached as a standard classification task because the data contain no ready-made flag indicating whether a customer was “reactivated.” The label therefore had to be engineered through a historical simulation.
+
+The notebook followed the roadmap’s time-machine logic in a leakage-safe way. Using only valid transactions observed up to the cutoff date, it identified the last valid purchase for each customer. Customers whose last purchase was at least 24 months before the cutoff were defined as inactive at that point. Their future behavior was then examined in the 24-month outcome window immediately after the cutoff. If a valid purchase occurred in that outcome window, the target was set to 1; otherwise it was set to 0. This procedure created one labeled row per inactive customer and made it possible to train a supervised model on a historically realistic reactivation problem.
+
+The importance of this block cannot be overstated. Every later metric depends on whether the labeling process truly respects time order. If the target were defined using transactions that overlap with the feature period, or if customers not genuinely inactive were accidentally included, the model could appear strong while being operationally meaningless. By isolating a pre-cutoff history window and a post-cutoff outcome window, the notebook turned the vague concept of “reactivation” into a precise and testable target.
+
+6. Feature engineering: turning customer history into predictive signals
+
+Once the training cohort had been labeled, the notebook moved to feature engineering. This section implemented the categories laid out in the roadmap: monetary features, frequency and recency variables, product and channel variables, client-registry variables, and behavioral signals. The emphasis throughout was on using only information available before the cutoff, in order to avoid leakage.
+
+The monetary block captured total valid spend, average order value, variability of order v  
+alue, maximum transaction size, and proxies for recent spend before the customer’s final observed purchase. This last point is especially important. The roadmap recommends “spend in the last 6/12 months before going inactive,” but if this were interpreted naively as “before the cutoff,” many already-inactive customers would mechanically have zero spend by construction. The notebook therefore used spend windows anchored to the last pre-cutoff purchase, which better captures pre-inactivity momentum.
+
+The frequency and recency block measured the number of valid transactions, the number of active months, purchase frequency per active month, months since last purchase at cutoff, average gap between purchase months, and customer tenure from registration to last observed purchase. These variables are directly aligned with the roadmap’s proposal to measure recency, activity rhythm, and depth of relationship.
+
+The product and channel block captured the ratio of tool purchases to other goods, the number of distinct product families and groups, the number of channels used, the dominant channel, and an entropy-based diversity index. These features operationalize the roadmap’s idea that broader and more varied purchase behavior may reflect a richer commercial relationship and therefore a different reactivation propensity.
+
+The behavioral block incorporated cancellation rate, return rate, and seasonality. This is important because the roadmap specifically recommends keeping cancellation rate as a possible feature even though cancelled rows themselves should be excluded from purchase calculations, and similarly recommends an explicit decision on whether negative NET values should be excluded or retained as more realistic net spend. The notebook chose to exclude cancelled rows from purchase features but preserve cancellation rate as a separate behavioral signal; it also retained negative NET within valid-spend calculations while separately tracking return behavior through a dedicated rate feature. This approach is faithful to the roadmap and analytically preferable because it distinguishes poor-quality orders from genuine net customer value.
+
+7. Baseline modeling: logistic regression as benchmark
+
+After the feature store had been assembled, the notebook built a modeling table and fitted a logistic-regression baseline. This step is directly recommended by the roadmap, which describes logistic regression as a fast, interpretable benchmark suitable for feature validation, while reserving gradient boosting as the primary non-linear model to compare against it. The notebook therefore used logistic regression not as a final destination, but as a disciplined first benchmark against which later models could be judged.
+
+The preprocessing pipeline handled missing numeric features with median imputation, categorical features with most-frequent imputation, and one-hot encoding for the categorical inputs. The labeled cohort was split into training and validation sets using a stratified split that preserved the target distribution, again in line with the roadmap’s suggested modeling pipeline.
+
+The baseline model produced very solid validation results. The validation base reactivation rate was 22.4%, which means that a random campaign would be expected to reach a reactivator roughly once every four to five contacts. Against that base rate, the logistic model achieved an ROC-AUC of 0.786 and a PR-AUC of 0.661, indicating that the model ranked likely reactivators well above likely non-reactivators. More importantly from a business perspective, precision at the top 5% reached 95.2%, and precision at the top 10% was 87.1%. These are the most meaningful metrics in a CRM setting because they translate directly into campaign efficiency.
+
+The decile analysis made the result even clearer. In the top decile—the 10% of validation customers with the highest predicted reactivation scores—290 out of 333 customers actually reactivated, corresponding to an observed response rate of 87.1%. Given the base rate of 22.4%, this translates into a lift of 3.88 times over random targeting. In practical terms, this means that contacting the top-scored customers would deliver almost four times as many reactivations per contact as an untargeted campaign. This is exactly the sort of outcome the roadmap describes as the core value proposition of the project.
+
+At the same time, the decile table also showed that performance drops sharply beyond the first two deciles. This is actually useful operationally. It suggests that the model is strongest as a prioritization tool for the highest-ranked customers, not as a blanket scoring mechanism for the entire inactive population. That aligns well with the roadmap’s intended use case, which is to select the top 
+𝑁
+N customers for campaigns based on budget.
+
+8. Interpretation of the ranking output
+
+The decile table is more than a model diagnostic; it is already a business recommendation in compressed form. Each decile groups customers after sorting them by predicted probability of reactivation. The “response rate” column tells us how many of those customers actually reactivated, while “lift versus base” tells us how much better that group performs compared with the average customer in the validation set.
+
+In this notebook, the top decile clearly stands out as the highest-priority target segment. The second decile remains above average, although materially weaker than the first. Below that, most deciles fall below the base rate, implying that large-scale outreach beyond the top 20% would likely become much less efficient. This is why the notebook’s narrative should not simply claim that “the model works.” It should state more precisely that the model is highly effective at concentrating the most promising reactivators at the top of the score distribution, which is exactly what a budget-constrained campaigning process needs.
+
+9. Tree-based model comparison and model governance
+
+The notebook was then extended toward a tree-based comparison model, following the roadmap’s recommendation to test gradient boosting because tabular behavioral data often contain non-linear patterns and feature interactions that linear models cannot exploit fully. The tree block initially encountered a technical issue because HistGradientBoostingClassifier requires dense input while one-hot encoding produces a sparse matrix by default. Correcting that preprocessing mismatch allowed the tree pipeline to proceed.
+
+The more important methodological point, however, is not the implementation detail but the model-governance logic. The notebook is being developed in a way that ensures the tree model is compared against the logistic model on the same validation split and with the same ranking-based business metrics. That is the correct decision framework. If the boosted model produces a meaningful improvement in PR-AUC, top-
+𝐾
+K precision, or lift, then it becomes the preferred predictive engine. If the gain is marginal, the logistic model remains a strong and defensible choice thanks to its transparency and simpler governance. This is entirely consistent with the roadmap’s modeling philosophy, which treats logistic regression as the benchmark and gradient boosting as the likely performance leader, but not as an automatic replacement.
+
+10. Business simulation: translating scores into campaign decisions
+
+A predictive notebook becomes truly useful only when its scores are translated into expected business outcomes. For that reason, the business-simulation block was added after model validation. This section implements the roadmap’s explicit business evaluation criteria: expected reactivation revenue, campaign ROI, lift over random targeting, and segmentation of performance by relevant business dimensions.
+
+The simulation starts from the scored validation population and uses a transparent set of assumptions. A contact cost is defined per customer. A gross margin rate can optionally be applied. Expected revenue from a successful reactivation is then approximated using a blend of declared economic potential and historical purchase behavior. This is an intentionally pragmatic approach. The roadmap itself suggests estimating expected reactivation revenue on the basis of ECONOMIC_POT and past behavior, since the business problem is not merely to predict reactivation but to rank customers by campaign value.
+
+For each campaign size—such as the top 1%, 5%, 10%, and 20% of scored inactive customers—the notebook computes the number of customers contacted, the expected number of reactivations, the expected response rate, the expected revenue, the campaign cost, expected net value, and expected ROI. It also compares these results with a random-targeting baseline. This block transforms model output into the kind of statement senior stakeholders actually need: if the company targets the top 
+𝑁
+N inactive customers, how many are expected to return, how much revenue might that generate, and is it more efficient than an untargeted campaign? This is exactly the kind of final recommendation the roadmap calls for.
+
+11. What the notebook has already demonstrated
+
+Taken together, the blocks developed so far show that the project is already on strong footing. The notebook does not simply fit a model to a raw table. It begins with business framing, checks the feasibility of the inactivity definition, engineers a leakage-safe target, constructs pre-cutoff customer features, validates a benchmark model with ranking metrics that matter to CRM decision-making, interprets top-decile performance in operational terms, and begins translating scores into expected campaign returns.
+
+That progression is exactly the right one for this problem. The roadmap stresses that the final deliverable should not stop at a generic ML score. It should show a lift chart, explain what drives reactivation, identify the customer segments with highest and lowest propensity, provide a concrete campaign recommendation, and state the data-quality and COVID caveats clearly. The notebook is already aligned with that structure.
+
+12. Remaining steps to complete the full roadmap
+
+The remaining stages are now relatively clear. First, the tree-based model should be completed and compared with the logistic benchmark on the same business metrics. Second, calibration and lift visualizations should be added, because the roadmap explicitly highlights calibration and lift charts as key outputs for stakeholders. Third, segment-level analysis should be developed by region, trade sector, customer size, and economic-potential class in order to show where the model is strongest and where its recommendations may need caution. Fourth, the chosen model should be applied to the end-of-2021 inactive cohort so that the notebook produces the final ranked campaign list the business actually needs. Finally, the report should conclude with a concise recommendation on how many customers to contact first, what response and revenue can be expected, and what caveats remain around seasonality, COVID disruption, cancellations, and incomplete observability.
+
+13. Final assessment
+
+In its current form, the notebook already demonstrates that reactivation modeling is feasible and potentially valuable for the company. The logistic baseline alone provides a strong signal that customer reactivation is not random and that historical purchase behavior, customer characteristics, and behavioral quality indicators can be combined to identify a much richer-than-average set of target customers. The top-decile validation result is especially encouraging because it shows that the model has immediate campaign utility even before more advanced methods are finalized.
+
+The deeper value of the notebook, however, lies in its structure. It does not treat modeling as a black box. Instead, it respects the business definition of inactivity, makes explicit choices about cancelled transactions and returns, acknowledges the distortion created by COVID and seasonality, and uses a time-consistent target that can support a credible deployment. In that sense, the notebook is not just a predictive exercise. It is a robust analytical framework for turning historical CRM data into a ranked, explainable, and economically interpretable reactivation strategy.
